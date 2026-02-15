@@ -124,8 +124,25 @@ def process_event(
                 # (rare case: complete series pack with all seasons already done)
                 next_service = services.downloader
                 items_to_submit = [existing_item]
+        elif isinstance(existing_item, Season):
+            # For Seasons, prioritize scraping episodes over downloading the season
+            unscraped_episodes = [
+                e
+                for e in existing_item.episodes
+                if e.last_state in [States.Indexed, States.Unknown]
+                and (overrides is not None or services.scraping.should_submit(e))
+            ]
+
+            if unscraped_episodes:
+                # Submit episodes for scraping - normal path for seasons with episodes
+                next_service = services.scraping
+                items_to_submit = unscraped_episodes
+            else:
+                # All episodes handled - download season pack
+                next_service = services.downloader
+                items_to_submit = [existing_item]
         else:
-            # Movies, Seasons, Episodes go straight to downloader
+            # Movies, Episodes go straight to downloader
             next_service = services.downloader
             items_to_submit = [existing_item]
 
