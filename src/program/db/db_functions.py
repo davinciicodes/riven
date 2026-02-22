@@ -63,8 +63,11 @@ def get_item_by_id(
     from program.media.item import MediaItem
 
     with _maybe_session(session) as (_s, _):
-        query = select(MediaItem).where(MediaItem.id == item_id)
-
+        query = (
+            select(MediaItem)
+            .options(selectinload(MediaItem.streams))
+            .where(MediaItem.id == item_id)
+        )
         if item_types:
             query = query.where(MediaItem.type.in_(item_types))
 
@@ -343,7 +346,7 @@ def run_thread_with_db_item(
                     input_item = session.merge(input_item)
 
                     from program.settings import settings_manager
-                    
+
                     # Execute service within the settings context if overrides exist
                     overrides = event.overrides or {}
                     with settings_manager.override(**overrides):
