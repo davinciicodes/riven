@@ -47,13 +47,13 @@ build: setup-builder
 
 push-dev: setup-builder
 	@echo "Building and pushing dev image to Docker Hub..."
-	@docker buildx build --platform linux/amd64,linux/arm64 -t spoked/riven:dev --push .
-	@echo "Image 'spoked/riven:dev' pushed to Docker Hub"
+	@docker buildx build --platform linux/amd64,linux/arm64 -t davinciicodes/riven:dev --push .
+	@echo "Image 'davinciicodes/riven:dev' pushed to Docker Hub"
 
 push-branch: setup-builder
 	@echo "Building and pushing branch '${BRANCH_NAME}' image to Docker Hub..."
-	@docker buildx build --platform linux/amd64,linux/arm64 -t spoked/riven:${BRANCH_NAME} --push .
-	@echo "Image 'spoked/riven:${BRANCH_NAME}' pushed to Docker Hub"
+	@docker buildx build --platform linux/amd64,linux/arm64 -t davinciicodes/riven:${BRANCH_NAME} --push .
+	@echo "Image 'davinciicodes/riven:${BRANCH_NAME}' pushed to Docker Hub"
 
 tidy:
 	@echo "Removing unused Docker images..."
