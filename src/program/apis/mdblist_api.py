@@ -93,7 +93,7 @@ class MdblistAPI:
         class ListItems(BaseModel):
             class ListItem(BaseModel):
                 id: StrictInt
-                rank: StrictInt
+                rank: StrictInt | None = None
                 adult: Literal[0, 1]
                 title: StrictStr
                 imdb_id: StrictStr | None = None
@@ -110,9 +110,12 @@ class MdblistAPI:
         url = url if url.endswith("/") else f"{url}/"
         url = url if url.endswith("json/") else f"{url}json/"
 
+        # Include append=1 to fetch appended/imported lists (e.g., from Trakt)
+        params = {**self.common_query_params, "append": "1"}
+
         response = self.session.get(
             url,
-            params=self.common_query_params,
+            params=params,
         )
 
         return ListItems(items=response.json()).items

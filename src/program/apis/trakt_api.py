@@ -110,7 +110,7 @@ class TraktAPI:
         url: str,
         model_validator: Callable[[dict[str, Any]], DataModel | None],
         *,
-        limit: int | None = None,
+        limit: int = 0,
     ) -> list[DataModel]:
         """Fetch paginated data from Trakt API with rate limiting."""
 
