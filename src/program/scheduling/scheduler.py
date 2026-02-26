@@ -208,9 +208,16 @@ class ProgramScheduler:
                 now = datetime.now()
                 due_tasks = self._get_pending_scheduled_tasks(session)
                 if not due_tasks:
+                    logger.trace("_process_scheduled_tasks: No due tasks to process")
                     return
 
+                logger.trace(
+                    f"_process_scheduled_tasks: Found {len(due_tasks)} due tasks"
+                )
                 for task in due_tasks:
+                    logger.trace(
+                        f"_process_scheduled_tasks: Processing task_id={task.id}, item_id={task.item_id}, type={task.task_type}, scheduled_for={task.scheduled_for}"
+                    )
                     self._process_single_scheduled_task(session, task, now)
         except SQLAlchemyError as e:
             logger.error(f"Scheduler DB error: {e}")
@@ -285,14 +292,27 @@ class ProgramScheduler:
         assert self.program.services, "Services not initialized in Program"
 
         indexer_service = self.program.services.indexer
+        logger.trace(
+            f"_run_reindex_for_item: Starting reindex for {item.log_string} (type={item.type}, id={item.id})"
+        )
 
         updated = next(indexer_service.run(item, log_msg=False), None)
 
         if updated:
+            logger.trace(
+                f"_run_reindex_for_item: Reindex returned updated item for {item.log_string}"
+            )
             session.merge(updated.media_items[0])
             session.commit()
+            logger.trace(
+                f"_run_reindex_for_item: Committed changes for {item.log_string}"
+            )
 
             logger.info(f"Reindexed {item.log_string} from scheduler")
+        else:
+            logger.trace(
+                f"_run_reindex_for_item: No updates returned for {item.log_string}"
+            )
 
     def _enqueue_item_if_needed(self, session: Session, item: MediaItem) -> None:
         """Refresh state and enqueue item to the event manager if not completed."""
@@ -332,13 +352,21 @@ class ProgramScheduler:
 
         offset_seconds = settings_manager.settings.indexer.schedule_offset_minutes * 60
         now = datetime.now()
+        logger.trace(
+            f"_monitor_ongoing_schedules: Starting monitor run at {now}, offset={offset_seconds}s"
+        )
 
         try:
             with db_session() as session:
+                logger.trace("_monitor_ongoing_schedules: Scheduling upcoming episodes")
                 self._schedule_upcoming_episodes(session, now, offset_seconds)
+                logger.trace("_monitor_ongoing_schedules: Scheduling upcoming movies")
                 self._schedule_upcoming_movies(session, now, offset_seconds)
+                logger.trace("_monitor_ongoing_schedules: Scheduling ongoing shows")
                 self._schedule_ongoing_shows(session, now)
+                logger.trace("_monitor_ongoing_schedules: Scheduling unknown movies")
                 self._schedule_unknown_movies(session, now)
+                logger.trace("_monitor_ongoing_schedules: Monitor run complete")
         except Exception as e:
             logger.error(f"Monitor ongoing schedules failed: {e}")
 
@@ -386,12 +414,23 @@ class ProgramScheduler:
             .all()
         )
 
+        logger.trace(
+            f"_schedule_upcoming_episodes: Found {len(upcoming_eps)} upcoming episodes (aired_at >= {now})"
+        )
+
         for ep in upcoming_eps:
+            logger.trace(
+                f"_schedule_upcoming_episodes: Checking {ep.log_string} (aired_at={ep.aired_at}, state={ep.last_state})"
+            )
+
             if (
                 not self._has_future_task(session, ep.id, "episode_release", now)
                 and ep.aired_at
             ):
                 run_at = ep.aired_at + timedelta(seconds=offset_seconds)
+                logger.trace(
+                    f"_schedule_upcoming_episodes: Scheduling {ep.log_string} for {run_at}"
+                )
 
                 try:
                     ep.schedule(
@@ -400,8 +439,15 @@ class ProgramScheduler:
                         offset_seconds=offset_seconds,
                         reason="monitor:episode_air",
                     )
+                    logger.trace(
+                        f"_schedule_upcoming_episodes: Successfully scheduled {ep.log_string}"
+                    )
                 except Exception as e:
                     logger.debug(f"Skipping schedule for {ep.log_string}: {e}")
+            else:
+                logger.trace(
+                    f"_schedule_upcoming_episodes: Skipping {ep.log_string} (already has future task or no aired_at)"
+                )
 
     def _schedule_upcoming_movies(
         self, session: Session, now: datetime, offset_seconds: int
@@ -442,12 +488,14 @@ class ProgramScheduler:
                     logger.debug(f"Skipping schedule for {mv.log_string}: {e}")
 
     def _schedule_ongoing_shows(self, session: Session, now: datetime) -> None:
-        """Schedule reindex_show for ongoing/unreleased shows based on next air, with daily fallback."""
+        """Schedule reindex_show for ongoing/unreleased/partially-completed shows based on next air, with daily fallback."""
 
         ongoing_shows = (
             session.execute(
                 select(Show).where(
-                    Show.last_state.in_([States.Ongoing, States.Unreleased])
+                    Show.last_state.in_(
+                        [States.Ongoing, States.Unreleased, States.PartiallyCompleted]
+                    )
                 )
             )
             .unique()
@@ -455,40 +503,73 @@ class ProgramScheduler:
             .all()
         )
 
+        logger.trace(
+            f"_schedule_ongoing_shows: Found {len(ongoing_shows)} ongoing/unreleased/partially-completed shows"
+        )
+
         for show in ongoing_shows:
             rd = show.release_data
             next_air = self._compute_next_air_datetime(rd, now)
+            logger.trace(
+                f"_schedule_ongoing_shows: {show.log_string} (state={show.last_state}, next_air={next_air})"
+            )
 
             if next_air and next_air > now:
+                logger.trace(
+                    f"_schedule_ongoing_shows: {show.log_string} has future next_air={next_air}"
+                )
                 if not self._has_future_task(session, show.id, "reindex_show", now):
+                    logger.trace(
+                        f"_schedule_ongoing_shows: Scheduling {show.log_string} for reindex at {next_air}"
+                    )
                     try:
                         show.schedule(
                             next_air,
                             task_type="reindex_show",
                             reason="monitor:next_air",
                         )
+                        logger.trace(
+                            f"_schedule_ongoing_shows: Successfully scheduled {show.log_string}"
+                        )
                     except Exception as e:
                         logger.debug(
                             f"Skipping reindex schedule for {show.log_string}: {e}"
                         )
+                else:
+                    logger.trace(
+                        f"_schedule_ongoing_shows: {show.log_string} already has future reindex task"
+                    )
             else:
                 fallback_time = (now + timedelta(days=1)).replace(
                     minute=0,
                     second=0,
                     microsecond=0,
                 )
+                logger.trace(
+                    f"_schedule_ongoing_shows: {show.log_string} no next_air, using fallback={fallback_time}"
+                )
 
                 if not self._has_future_task(session, show.id, "reindex_show", now):
+                    logger.trace(
+                        f"_schedule_ongoing_shows: Scheduling {show.log_string} for fallback reindex at {fallback_time}"
+                    )
                     try:
                         show.schedule(
                             fallback_time,
                             task_type="reindex_show",
                             reason="monitor:fallback_daily",
                         )
+                        logger.trace(
+                            f"_schedule_ongoing_shows: Successfully scheduled {show.log_string} (fallback)"
+                        )
                     except Exception as e:
                         logger.debug(
                             f"Skipping fallback reindex for {show.log_string}: {e}"
                         )
+                else:
+                    logger.trace(
+                        f"_schedule_ongoing_shows: {show.log_string} already has future reindex task (fallback)"
+                    )
 
     def _schedule_unknown_movies(self, session: Session, now: datetime) -> None:
         """Schedule daily reindex for movies without any known release date."""

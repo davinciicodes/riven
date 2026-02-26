@@ -56,6 +56,8 @@ class EventManager:
     Manages the execution of services and the handling of events.
     """
 
+    _MULTI_WORKER_SERVICES = {"Downloader": 1, "Symlinker": 1, "PostProcessing": 1}
+
     def __init__(self):
         self._executors = list[ServiceExecutor]()
         self._futures = list[FutureWithEvent]()
@@ -78,20 +80,30 @@ class EventManager:
 
         for service_executor in self._executors:
             if service_executor.service_name == service_name:
+                logger.log(
+                    "TRACE",
+                    f"_find_or_create_executor: Found existing executor for {service_name}",
+                )
                 logger.debug(f"Executor for {service_name} found.")
 
                 return service_executor.executor
 
+        workers = self._MULTI_WORKER_SERVICES.get(service_name, 1)
+        logger.log(
+            "TRACE",
+            f"_find_or_create_executor: Creating new executor for {service_name} with {workers} workers",
+        )
+
         _executor = ThreadPoolExecutor(
             thread_name_prefix=service_name,
-            max_workers=1,
+            max_workers=workers,
         )
 
         self._executors.append(
             ServiceExecutor(service_name=service_name, executor=_executor)
         )
 
-        logger.debug(f"Created executor for {service_name}")
+        logger.debug(f"Created executor for {service_name} with {workers} workers")
 
         return _executor
 
@@ -104,6 +116,11 @@ class EventManager:
             service (type): The service class associated with the future.
         """
 
+        logger.log(
+            "TRACE",
+            f"_process_future CALLED for service={service.__class__.__name__}, event={future_with_event.event.log_message if future_with_event.event else None}",
+        )
+
         if future_with_event.future.cancelled():
             if future_with_event.event:
                 logger.debug(
@@ -115,6 +132,10 @@ class EventManager:
 
         try:
             result = future_with_event.future.result()
+            logger.log(
+                "TRACE",
+                f"_process_future RESULT: result={result} (type={type(result).__name__})",
+            )
 
             if future_with_event in self._futures:
                 self._futures.remove(future_with_event)
@@ -127,6 +148,11 @@ class EventManager:
                 item_id, timestamp = result
             else:
                 item_id, timestamp = result, datetime.now()
+
+            logger.log(
+                "TRACE",
+                f"_process_future PARSED: item_id={item_id}, timestamp={timestamp}",
+            )
 
             if item_id:
                 if future_with_event.event:
@@ -144,15 +170,28 @@ class EventManager:
                     return
 
                 # Propagate overrides to the new event to maintain setting context across service transitions
-                event_overrides = future_with_event.event.overrides if future_with_event.event else None
+                event_overrides = (
+                    future_with_event.event.overrides
+                    if future_with_event.event
+                    else None
+                )
 
+                logger.log(
+                    "TRACE",
+                    f"_process_future QUEUING: Calling add_event for item_id={item_id}, emitted_by={service.__class__.__name__}, run_at={timestamp}",
+                )
                 self.add_event(
                     Event(
                         emitted_by=service,
                         item_id=item_id,
                         run_at=timestamp,
-                        overrides=event_overrides
+                        overrides=event_overrides,
                     )
+                )
+            else:
+                logger.log(
+                    "TRACE",
+                    f"_process_future SKIP: item_id is None/False, not calling add_event",
                 )
         except Exception as e:
             logger.error(f"Error in future for {future_with_event}: {e}")
@@ -177,6 +216,11 @@ class EventManager:
         """
 
         with self.mutex:
+            logger.log(
+                "TRACE",
+                f"add_event_to_queue: Attempting to queue event={event.log_message}, item_id={event.item_id}, emitted_by={event.emitted_by}",
+            )
+
             if event.item_id:
                 with db_session() as session:
                     try:
@@ -209,8 +253,17 @@ class EventManager:
                         # Cache the item state in the event for efficient priority sorting
                         if item.last_state:
                             event.item_state = item.last_state
+                            logger.log(
+                                "TRACE",
+                                f"add_event_to_queue: Cached item_state={item.last_state} for item_id={event.item_id}",
+                            )
 
+            queue_size_before = len(self._queued_events)
             self._queued_events.append(event)
+            logger.log(
+                "TRACE",
+                f"add_event_to_queue: Queue size changed from {queue_size_before} to {len(self._queued_events)}",
+            )
 
             if log_message:
                 logger.debug(f"Added {event.log_message} to the queue.")
@@ -224,7 +277,12 @@ class EventManager:
         """
 
         with self.mutex:
+            queue_size_before = len(self._queued_events)
             self._queued_events.remove(event)
+            logger.log(
+                "TRACE",
+                f"remove_event_from_queue: Queue size changed from {queue_size_before} to {len(self._queued_events)} after removing {event.log_message}",
+            )
             logger.debug(f"Removed {event.log_message} from the queue.")
 
     def remove_event_from_running(self, event: Event):
@@ -237,7 +295,12 @@ class EventManager:
 
         with self.mutex:
             if event in self._running_events:
+                running_size_before = len(self._running_events)
                 self._running_events.remove(event)
+                logger.log(
+                    "TRACE",
+                    f"remove_event_from_running: Running events size changed from {running_size_before} to {len(self._running_events)} for {event.log_message}",
+                )
                 logger.debug(f"Removed {event.log_message} from running events.")
 
     def remove_id_from_queue(self, item_id: int):
@@ -261,7 +324,12 @@ class EventManager:
         """
 
         with self.mutex:
+            running_size_before = len(self._running_events)
             self._running_events.append(event)
+            logger.log(
+                "TRACE",
+                f"add_event_to_running: Running events size changed from {running_size_before} to {len(self._running_events)} for {event.log_message}",
+            )
             logger.debug(f"Added {event.log_message} to running events.")
 
     def remove_id_from_running(self, item_id: int):
@@ -309,14 +377,31 @@ class EventManager:
             log_message += f" with {event.log_message}"
 
         logger.debug(log_message)
+        logger.log(
+            "TRACE",
+            f"submit_job: service={service.__class__.__name__}, event={event.log_message if event else None}, item_id={event.item_id if event else None}",
+        )
 
         cancellation_event = threading.Event()
 
         executor = self._find_or_create_executor(service)
+        logger.log(
+            "TRACE", f"submit_job: Got executor for {service.__class__.__name__}"
+        )
 
         assert program.services
 
         runner = program.services[service.get_key()]
+        logger.log(
+            "TRACE",
+            f"submit_job: Got runner {runner.__class__.__name__} for key {service.get_key()}",
+        )
+
+        futures_count_before = len(self._futures)
+        logger.log(
+            "TRACE",
+            f"submit_job: Submitting to executor (current futures count: {futures_count_before})",
+        )
 
         future = executor.submit(
             db_functions.run_thread_with_db_item,
@@ -334,6 +419,10 @@ class EventManager:
         )
 
         self._futures.append(future_with_event)
+        logger.log(
+            "TRACE",
+            f"submit_job: Future submitted and stored (futures count now: {len(self._futures)})",
+        )
 
         sse_manager.publish_event(
             "event_update",
@@ -342,6 +431,10 @@ class EventManager:
 
         future.add_done_callback(
             lambda f: self._process_future(future_with_event, service),
+        )
+        logger.log(
+            "TRACE",
+            f"submit_job: Done callback registered for {service.__class__.__name__}",
         )
 
     def cancel_job(self, item_id: int, suppress_logs: bool = False):
@@ -414,6 +507,7 @@ class EventManager:
             if self._queued_events:
                 with self.mutex:
                     now = datetime.now()
+                    queue_size = len(self._queued_events)
 
                     # Filter events that are ready to run (run_at <= now)
                     ready_events = [
@@ -453,7 +547,17 @@ class EventManager:
 
                     # Get the highest priority event
                     event = ready_events[0]
+                    logger.log(
+                        "TRACE",
+                        f"next: Selected event {event.log_message} with item_state={event.item_state}, run_at={event.run_at}",
+                    )
+
+                    queue_size_before = len(self._queued_events)
                     self._queued_events.remove(event)
+                    logger.log(
+                        "TRACE",
+                        f"next: Removed selected event from queue (size: {queue_size_before} -> {len(self._queued_events)})",
+                    )
 
                     return event
             raise Empty

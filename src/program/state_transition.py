@@ -104,6 +104,57 @@ def process_event(
                 and (overrides is not None or services.scraping.should_submit(e))
             ]
 
+    elif existing_item and existing_item.last_state == States.Unknown:
+        # Treat Unknown state like Indexed - submit for scraping
+        next_service = services.scraping
+
+        if emitted_by != services.scraping and (
+            overrides is not None or services.scraping.should_submit(existing_item)
+        ):
+            items_to_submit = [existing_item]
+        elif isinstance(existing_item, Show):
+            # Check if all seasons are already scraped (retry scenario)
+            scraped_seasons = [
+                s for s in existing_item.seasons if s.last_state == States.Scraped
+            ]
+
+            if scraped_seasons:
+                # All/some seasons already scraped, delegate to each season's state logic
+                for season in scraped_seasons:
+                    # Recursively process scraped seasons
+                    processed = process_event(emitted_by, season, None, overrides)
+                    if processed.related_media_items:
+                        items_to_submit += processed.related_media_items
+                        if processed.service:
+                            next_service = processed.service
+            else:
+                # Normal Unknown case - look for unscraped seasons
+                items_to_submit = [
+                    s
+                    for s in existing_item.seasons
+                    if s.last_state
+                    in [States.Indexed, States.PartiallyCompleted, States.Unknown]
+                    and (overrides is not None or services.scraping.should_submit(s))
+                ]
+        elif isinstance(existing_item, Season):
+            # Check if all episodes are already scraped (retry scenario)
+            scraped_episodes = [
+                e for e in existing_item.episodes if e.last_state == States.Scraped
+            ]
+
+            if scraped_episodes:
+                # Episodes already scraped, submit them to downloader
+                next_service = services.downloader
+                items_to_submit = scraped_episodes
+            else:
+                # Normal Unknown case - look for unscraped episodes
+                items_to_submit = [
+                    e
+                    for e in existing_item.episodes
+                    if e.last_state in [States.Indexed, States.Unknown]
+                    and (overrides is not None or services.scraping.should_submit(e))
+                ]
+
     elif existing_item and existing_item.last_state == States.Scraped:
         # For Shows, prioritize scraping seasons over downloading the show itself
         # Shows typically transition to PartiallyCompleted/Ongoing, not Downloaded
