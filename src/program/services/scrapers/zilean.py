@@ -103,6 +103,11 @@ class Zilean(ScraperService[ZileanConfig]):
             season = item.parent.number
             episode = item.number
 
+        # Include the show year in the query to disambiguate shows with the same title
+        year = getattr(getattr(item, "top_parent", item), "year", None)
+        if year:
+            query = f"{query} {year}"
+
         return Params(
             query=query,
             season=season,
