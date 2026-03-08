@@ -22,6 +22,7 @@ class ZileanScrapeResponse(BaseModel):
     class ResultItem(BaseModel):
         raw_title: str | None
         info_hash: str | None
+        imdb_id: str | None = None
 
     data: list[ResultItem]
 
@@ -138,10 +139,18 @@ class Zilean(ScraperService[ZileanConfig]):
             logger.log("NOT_FOUND", f"No streams found for {item.log_string}")
             return {}
 
+        item_imdb_id = item.top_parent.imdb_id if hasattr(item, "top_parent") else item.imdb_id
         torrents = dict[str, str]()
 
         for result in data:
             if not result.raw_title or not result.info_hash:
+                continue
+
+            # If both the item and result have an IMDB ID, skip mismatches
+            if item_imdb_id and result.imdb_id and result.imdb_id != item_imdb_id:
+                logger.trace(
+                    f"Zilean: skipping '{result.raw_title}' (imdb {result.imdb_id} != {item_imdb_id})"
+                )
                 continue
 
             torrents[result.info_hash] = result.raw_title

@@ -182,6 +182,50 @@ class VFSDatabase:
 
         return None
 
+    def reset_item_for_link_failure(self, original_filename: str) -> None:
+        """Reset a MediaItem for re-scraping after repeated stream link failures."""
+
+        try:
+            from program.program import Program
+
+            with db_session() as session:
+                entry = (
+                    session.query(MediaEntry)
+                    .filter(MediaEntry.original_filename == original_filename)
+                    .first()
+                )
+
+                if not entry or not entry.media_item:
+                    logger.warning(
+                        f"No item found to reset for repeated link failures on {original_filename}"
+                    )
+                    return
+
+                item_id = entry.media_item.id
+
+                def mutation(i: MediaItem, s: Session):
+                    i.blacklist_active_stream()
+                    i.reset()
+
+                apply_item_mutation(
+                    program=di[Program],
+                    item=entry.media_item,
+                    mutation_fn=mutation,
+                    session=session,
+                )
+
+                session.commit()
+
+                di[Program].em.add_event(Event("VFS", item_id))
+
+                logger.info(
+                    f"Re-queued item {item_id} for re-scrape after repeated link failures on {original_filename}"
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to reset item for {original_filename} after link failures: {e}"
+            )
+
     def get_entry_by_original_filename(
         self,
         original_filename: str,

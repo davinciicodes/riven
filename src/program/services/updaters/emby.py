@@ -48,7 +48,7 @@ class EmbyUpdater(BaseUpdater):
         try:
             response = self.session.post(
                 f"{self.settings.url}/Library/Media/Updated",
-                json={"Updates": [{"Path": path, "UpdateType": "Created"}]},
+                json={"Updates": [{"Path": path, "UpdateType": "Modified"}]},
                 params={"api_key": self.settings.api_key},
             )
 
