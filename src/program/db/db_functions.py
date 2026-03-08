@@ -63,8 +63,11 @@ def get_item_by_id(
     from program.media.item import MediaItem
 
     with _maybe_session(session) as (_s, _):
-        query = select(MediaItem).where(MediaItem.id == item_id)
-
+        query = (
+            select(MediaItem)
+            .options(selectinload(MediaItem.streams))
+            .where(MediaItem.id == item_id)
+        )
         if item_types:
             query = query.where(MediaItem.type.in_(item_types))
 
@@ -334,22 +337,58 @@ def run_thread_with_db_item(
 
     from program.media.item import Episode, Season
 
+    logger.log(
+        "TRACE",
+        f"run_thread_with_db_item: ENTER service={service.__class__.__name__}, event={event.log_message if event else None}, item_id={event.item_id if event else None}, has_content_item={event.content_item is not None if event else False}",
+    )
+
     if event:
         with db_session() as session:
+            logger.log(
+                "TRACE",
+                f"run_thread_with_db_item: DB session created for event processing",
+            )
+
             if event.item_id:
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Processing existing item_id={event.item_id}",
+                )
                 input_item = get_item_by_id(event.item_id, session=session)
 
                 if input_item:
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Item loaded from DB, type={input_item.type}, merging to session",
+                    )
                     input_item = session.merge(input_item)
 
                     from program.settings import settings_manager
-                    
+
                     # Execute service within the settings context if overrides exist
                     overrides = event.overrides or {}
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Executing service with overrides={list(overrides.keys()) if overrides else 'none'}",
+                    )
+
                     with settings_manager.override(**overrides):
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: Calling fn({input_item.id}) for service {service.__class__.__name__}",
+                        )
                         runner_result = next(fn(input_item), None)
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: fn() returned runner_result={runner_result is not None}, type={type(runner_result).__name__ if runner_result else None}",
+                        )
 
                     if runner_result:
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: runner_result has {len(runner_result.media_items)} media_items, run_at={runner_result.run_at}",
+                        )
+
                         if len(runner_result.media_items) > 1:
                             logger.warning(
                                 f"Service {service.__class__.__name__} emitted multiple items for input item {input_item}, only the first will be processed."
@@ -358,29 +397,93 @@ def run_thread_with_db_item(
                         item = runner_result.media_items[0]
                         run_at = runner_result.run_at
 
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: Processing result for item_id={item.id}, run_at={run_at}, cancellation_set={cancellation_event.is_set()}",
+                        )
+
                         if not cancellation_event.is_set():
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: Not cancelled, updating state for item type={type(input_item).__name__}",
+                            )
                             # Update parent item based on type
                             if isinstance(input_item, Episode):
                                 input_item.parent.parent.store_state()
+                                logger.log(
+                                    "TRACE",
+                                    f"run_thread_with_db_item: Stored state for Episode's grandparent (Show)",
+                                )
                             elif isinstance(input_item, Season):
                                 input_item.parent.store_state()
+                                logger.log(
+                                    "TRACE",
+                                    f"run_thread_with_db_item: Stored state for Season's parent (Show)",
+                                )
                             else:
                                 item.store_state()
+                                logger.log(
+                                    "TRACE",
+                                    f"run_thread_with_db_item: Stored state for item directly",
+                                )
 
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: Committing session for item_id={item.id}",
+                            )
                             session.commit()
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: Session committed successfully",
+                            )
+                        else:
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: Cancellation event set, skipping state update and commit",
+                            )
 
                         if run_at:
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: Returning (item_id={item.id}, run_at={run_at})",
+                            )
                             return (item.id, run_at)
 
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: Returning item_id={item.id}",
+                        )
                         return item.id
+                else:
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Item with id={event.item_id} not found in DB",
+                    )
 
             if event.content_item:
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Processing content_item={event.content_item.log_string if hasattr(event.content_item, 'log_string') else event.content_item.imdb_id}",
+                )
+
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Calling fn(content_item) for service {service.__class__.__name__}",
+                )
                 runner_result = next(fn(event.content_item), None)
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: fn() returned runner_result={runner_result is not None}",
+                )
 
                 if runner_result is None:
                     msg = event.content_item.log_string or event.content_item.imdb_id
 
                     logger.debug(f"Unable to index {msg}")
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Unable to index {msg}, returning None",
+                    )
 
                     return None
 
@@ -390,6 +493,10 @@ def run_thread_with_db_item(
                     )
 
                 indexed_item = runner_result.media_items[0]
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Indexed item_id={indexed_item.id}, checking if already exists",
+                )
 
                 # Idempotent insert: skip if any known ID already exists
                 if item_exists_by_any_id(
@@ -402,20 +509,40 @@ def run_thread_with_db_item(
                     logger.debug(
                         f"Item with ID {indexed_item.id} already exists, skipping save"
                     )
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Item already exists, returning existing item_id={indexed_item.id}",
+                    )
 
                     return indexed_item.id
 
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Item doesn't exist, storing state and adding to session",
+                )
                 indexed_item.store_state()
 
                 session.add(indexed_item)
 
                 if not cancellation_event.is_set():
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Committing new indexed_item to DB",
+                    )
                     try:
                         session.commit()
+                        logger.log(
+                            "TRACE",
+                            f"run_thread_with_db_item: Successfully committed indexed_item={indexed_item.id}",
+                        )
                     except IntegrityError as e:
                         if "duplicate key value violates unique constraint" in str(e):
                             logger.debug(
                                 f"Item with ID {event.item_id} was added by another process, skipping"
+                            )
+                            logger.log(
+                                "TRACE",
+                                f"run_thread_with_db_item: IntegrityError (duplicate), rolling back",
                             )
 
                             session.rollback()
@@ -423,16 +550,42 @@ def run_thread_with_db_item(
                             return None
 
                         raise
+                else:
+                    logger.log(
+                        "TRACE",
+                        f"run_thread_with_db_item: Cancellation event set, skipping commit",
+                    )
 
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Returning indexed_item.id={indexed_item.id}",
+                )
                 return indexed_item.id
     else:
         # Content services dont pass events
+        logger.log(
+            "TRACE",
+            f"run_thread_with_db_item: No event provided, running content service {service.__class__.__name__}",
+        )
         runner_result = next(fn(None), None)
 
         if runner_result:
+            logger.log(
+                "TRACE",
+                f"run_thread_with_db_item: Content service returned {len(runner_result.media_items)} items, adding to event manager",
+            )
             for item in runner_result.media_items:
                 program.em.add_item(item, service=service.__class__.__name__)
+                logger.log(
+                    "TRACE",
+                    f"run_thread_with_db_item: Added item to event manager: {item.log_string if hasattr(item, 'log_string') else item.id}",
+                )
+        else:
+            logger.log(
+                "TRACE", f"run_thread_with_db_item: Content service returned None"
+            )
 
+    logger.log("TRACE", f"run_thread_with_db_item: EXIT returning None")
     return None
 
 

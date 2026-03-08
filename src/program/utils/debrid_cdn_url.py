@@ -1,4 +1,5 @@
 from typing import Self
+import time
 import httpx
 from loguru import logger
 
@@ -18,6 +19,12 @@ class RefreshedURLIdenticalException(Exception):
     """Exception raised when a refreshed URL is identical to the previous URL."""
 
     pass
+
+
+# Cache of recently-validated CDN URLs: original_filename -> (validated_url, expiry_timestamp)
+# Skips redundant network round-trips when the same file is opened many times in quick succession.
+_VALIDATION_CACHE: dict[str, tuple[str, float]] = {}
+_VALIDATION_CACHE_TTL = 300  # seconds
 
 
 class DebridCDNUrl:
@@ -54,6 +61,14 @@ class DebridCDNUrl:
     ) -> str | None:
         """Get a validated CDN URL, refreshing if requested."""
 
+        # Return cached result if the URL was validated recently, avoiding a
+        # blocking network round-trip on every open() call.
+        if attempt == 1 and self.filename and self.url:
+            cached = _VALIDATION_CACHE.get(self.filename)
+            if cached and cached[0] == self.url and cached[1] > time.monotonic():
+                logger.trace(f"CDN URL cache hit for {self.filename}")
+                return self.url
+
         try:
             # Assert URL availability by opening a stream, using a proxy if needed
             proxy = (
@@ -77,6 +92,12 @@ class DebridCDNUrl:
                 with httpx.Client(proxy=proxy) as client:
                     with client.stream(method="GET", url=self.url) as response:
                         response.raise_for_status()
+
+                        if self.filename:
+                            _VALIDATION_CACHE[self.filename] = (
+                                self.url,
+                                time.monotonic() + _VALIDATION_CACHE_TTL,
+                            )
 
                         return self.url
             except httpx.TimeoutException as e:
@@ -116,6 +137,9 @@ class DebridCDNUrl:
             return None
         except RefreshedURLIdenticalException as e:
             # If the URL hasn't changed after refreshing, it is likely dead.
+            # Evict the cache entry so the next open() re-validates from scratch.
+            if self.filename:
+                _VALIDATION_CACHE.pop(self.filename, None)
             # Raise an exception to indicate the link is unavailable to trigger a re-scrape.
             raise DebridServiceLinkUnavailable(
                 provider=self.provider,

@@ -97,11 +97,14 @@ class MediaAnalysisService(AnalysisService):
 
         try:
             logger.debug(f"Analyzing media file for {item.log_string}")
+            logger.log("TRACE", f"MediaAnalysisService.run: Starting ffprobe analysis for item_id={item.id}")
 
             if self._analyze_with_ffprobe(validated_url, item):
                 logger.debug(f"Media analysis completed for {item.log_string}")
+                logger.log("TRACE", f"MediaAnalysisService.run: ffprobe analysis completed for item_id={item.id}")
 
                 return True
+            logger.log("TRACE", f"MediaAnalysisService.run: ffprobe analysis returned False for item_id={item.id}")
         except FileNotFoundError:
             logger.warning(f"VFS file not found for {item.log_string}, cannot analyze")
         except Exception as e:
@@ -128,7 +131,9 @@ class MediaAnalysisService(AnalysisService):
                 )
                 return False
 
+            logger.log("TRACE", f"_analyze_with_ffprobe: Calling parse_media_url for item_id={item.id}")
             if ffprobe_metadata := parse_media_url(playback_url):
+                logger.log("TRACE", f"_analyze_with_ffprobe: parse_media_url returned data for item_id={item.id}")
                 media_entry = item.media_entry
 
                 assert media_entry

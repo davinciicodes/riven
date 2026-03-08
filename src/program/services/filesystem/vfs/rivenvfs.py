@@ -120,6 +120,9 @@ class RivenVFS(pyfuse3.Operations):
     removing, and managing virtual files and directories.
     """
 
+    # Number of consecutive read failures before a dead link triggers re-scraping
+    _LINK_FAILURE_THRESHOLD = 3
+
     def __init__(self, mountpoint: str, downloader: Downloader) -> None:
         """
         Initialize the Riven Virtual File System.
@@ -204,6 +207,9 @@ class RivenVFS(pyfuse3.Operations):
 
         # Opener statistics
         self.opener_stats = dict[str, dict[str, Any]]()
+
+        # Per-filename consecutive link failure counter; triggers re-scrape at threshold
+        self._link_failure_counts: dict[str, int] = {}
 
         # Mount management
         self.mounted = False
@@ -1661,6 +1667,27 @@ class RivenVFS(pyfuse3.Operations):
             logger.exception(f"readdir error for inode={fh}")
             raise pyfuse3.FUSEError(errno.EIO)
 
+    def _record_link_failure(self, original_filename: str) -> None:
+        """Increment the consecutive failure count for a link.
+
+        When the count reaches _LINK_FAILURE_THRESHOLD the item is blacklisted
+        and re-queued for scraping automatically.
+        """
+
+        count = self._link_failure_counts.get(original_filename, 0) + 1
+        self._link_failure_counts[original_filename] = count
+
+        logger.debug(
+            f"Link failure {count}/{self._LINK_FAILURE_THRESHOLD} for {original_filename}"
+        )
+
+        if count >= self._LINK_FAILURE_THRESHOLD:
+            self._link_failure_counts.pop(original_filename, None)
+            logger.warning(
+                f"Link failure threshold reached for {original_filename}; triggering re-scrape"
+            )
+            self.vfs_db.reset_item_for_link_failure(original_filename)
+
     async def open(
         self,
         inode: pyfuse3.InodeT,
@@ -1899,6 +1926,8 @@ class RivenVFS(pyfuse3.Operations):
                     logger.error(
                         stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
                     )
+
+                self._record_link_failure(original_filename)
 
                 raise pyfuse3.FUSEError(errno.ENOENT) from e
             except* DebridServiceForbiddenException as e:

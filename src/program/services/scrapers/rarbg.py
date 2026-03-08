@@ -90,11 +90,9 @@ class Rarbg(ScraperService[RarbgConfig]):
     def scrape(self, item: MediaItem) -> dict[str, str]:
         """Wrapper for `TheRARBG` scrape method"""
 
-        search_string = (
-            item.log_string
-            if not (isinstance(item, Movie) and item.aired_at)
-            else f"{item.log_string} ({item.aired_at.year})"
-        )
+        # Include the show/movie year to disambiguate items with the same title
+        year = getattr(getattr(item, "top_parent", item), "year", None)
+        search_string = f"{item.log_string} ({year})" if year else item.log_string
 
         url = f"/get-posts/keywords:{search_string}:category:Movies:category:TV:category:Anime:ncategory:XXX/?format=json"
 

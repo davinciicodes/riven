@@ -14,6 +14,7 @@ from RTN.models import SettingsModel
 from typing import cast
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
+from program.media.state import States
 from program.media.stream import Stream
 from program.settings import settings_manager
 from program.settings.models import RTNSettingsModel, ScraperModel
@@ -223,6 +224,12 @@ def parse_results(
                     )
                     continue
 
+            if not manual and torrent.data.quality == "DVD" and _is_show_ongoing(item):
+                logger.trace(
+                    f"Skipping DVD torrent for ongoing show {item.log_string}: {raw_title}"
+                )
+                continue
+
             if not manual and torrent.data.country and not item.is_anime:
                 # If country is present, then check to make sure it's correct. (Covers: US, UK, NZ, AU)
                 if (
@@ -295,6 +302,17 @@ def _check_item_year(aired_at: datetime, data: ParsedData) -> bool:
         aired_at.year,
         aired_at.year + 1,
     ]
+
+
+def _is_show_ongoing(item: MediaItem) -> bool:
+    """Return True if the item belongs to a currently ongoing show."""
+    if isinstance(item, Episode):
+        show = item.parent.parent if item.parent else None
+    elif isinstance(item, Season):
+        show = item.parent
+    else:
+        return False
+    return show is not None and show.last_state in (States.Ongoing, States.PartiallyCompleted)
 
 
 def _get_item_country(item: MediaItem) -> str | None:

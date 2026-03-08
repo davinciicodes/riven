@@ -93,11 +93,18 @@ class TVDBIndexer(BaseIndexer):
             tvdb_id = show.tvdb_id
             imdb_id = show.imdb_id
 
+            logger.trace(
+                f"_update_show_metadata: Updating {show.log_string} (tvdb_id={tvdb_id}, imdb_id={imdb_id})"
+            )
+
             if not tvdb_id and not imdb_id:
                 logger.error(f"Show {show.log_string} has no TVDB or IMDB ID")
                 return False
 
             # Get show details from API
+            logger.trace(
+                f"_update_show_metadata: Fetching show details from TVDB API for {show.log_string}"
+            )
             show_data = None
 
             if tvdb_id:
@@ -217,7 +224,11 @@ class TVDBIndexer(BaseIndexer):
             show.tvdb_status = tvdb_status
 
             # Update seasons and episodes (add new ones, update existing ones)
+            logger.trace(
+                f"_update_show_metadata: Calling _add_seasons_to_show for {show.log_string}"
+            )
             self._add_seasons_to_show(show, show_data)
+            logger.trace(f"_update_show_metadata: Completed updating {show.log_string}")
 
             return True
 
@@ -407,14 +418,22 @@ class TVDBIndexer(BaseIndexer):
         """Add or update seasons and episodes for the given show using TVDB API."""
 
         try:
+            logger.trace(f"_add_seasons_to_show: Starting for {show.log_string}")
+
             # Build a map of existing seasons by number for quick lookup
             existing_seasons = {s.number: s for s in show.seasons}
+            logger.trace(
+                f"_add_seasons_to_show: {show.log_string} has {len(existing_seasons)} existing seasons in DB"
+            )
 
             filtered_seasons = [
                 season
                 for season in show_details.seasons or []
                 if season.number != 0 and season.type and season.type.type == "official"
             ]
+            logger.trace(
+                f"_add_seasons_to_show: Found {len(filtered_seasons)} official seasons from TVDB for {show.log_string}"
+            )
 
             for season_data in filtered_seasons:
                 if season_data.id and (
@@ -423,12 +442,22 @@ class TVDBIndexer(BaseIndexer):
                     season_number = extended_data.number
 
                     if season_number is None:
+                        logger.trace(
+                            f"_add_seasons_to_show: Skipping season with None number for {show.log_string}"
+                        )
                         continue
+
+                    logger.trace(
+                        f"_add_seasons_to_show: Processing season {season_number} for {show.log_string}"
+                    )
 
                     # Check if this season already exists
                     if season_number in existing_seasons:
                         # Update existing season with fresh metadata
                         season_item = existing_seasons[season_number]
+                        logger.trace(
+                            f"_add_seasons_to_show: Updating existing season {season_number} (id={season_item.id}) for {show.log_string}"
+                        )
 
                         if season_item.poster_path is None:
                             season_item.poster_path = show.poster_path
@@ -436,30 +465,52 @@ class TVDBIndexer(BaseIndexer):
                         self._update_season_metadata(season_item, extended_data)
                     else:
                         # Create new season
+                        logger.trace(
+                            f"_add_seasons_to_show: Creating NEW season {season_number} for {show.log_string}"
+                        )
                         season_item = self._create_season_from_data(extended_data, show)
 
                         if not season_item:
+                            logger.trace(
+                                f"_add_seasons_to_show: Failed to create season {season_number} for {show.log_string}"
+                            )
                             continue
 
                         show.add_season(season_item)
+                        logger.trace(
+                            f"_add_seasons_to_show: Added NEW season {season_number} to {show.log_string}"
+                        )
 
                     # Handle episodes for this season
                     if episodes := extended_data.episodes:
+                        logger.trace(
+                            f"_add_seasons_to_show: Season {season_number} has {len(episodes)} episodes from TVDB for {show.log_string}"
+                        )
+
                         # Build a map of existing episodes by number
                         existing_episodes = dict[int, Episode](
                             {e.number: e for e in season_item.episodes}
+                        )
+                        logger.trace(
+                            f"_add_seasons_to_show: Season {season_number} has {len(existing_episodes)} existing episodes in DB for {show.log_string}"
                         )
 
                         for episode_data in episodes:
                             episode_number = episode_data.number
 
                             if episode_number is None:
+                                logger.trace(
+                                    f"_add_seasons_to_show: Skipping episode with None number in season {season_number} for {show.log_string}"
+                                )
                                 continue
 
                             # Check if this episode already exists
                             if episode_number in existing_episodes:
                                 # Update existing episode with fresh metadata
                                 episode_item = existing_episodes[episode_number]
+                                logger.trace(
+                                    f"_add_seasons_to_show: Updating existing S{season_number}E{episode_number} (id={episode_item.id}, aired={episode_data.aired}) for {show.log_string}"
+                                )
 
                                 self._update_episode_metadata(
                                     episode_item,
@@ -467,6 +518,9 @@ class TVDBIndexer(BaseIndexer):
                                 )
                             else:
                                 # Create new episode
+                                logger.trace(
+                                    f"_add_seasons_to_show: Creating NEW S{season_number}E{episode_number} for {show.log_string} (aired={episode_data.aired})"
+                                )
                                 episode_item = self._create_episode_from_data(
                                     episode_data,
                                     season_item,
@@ -474,6 +528,17 @@ class TVDBIndexer(BaseIndexer):
 
                                 if episode_item:
                                     season_item.add_episode(episode_item)
+                                    logger.info(
+                                        f"Added NEW episode S{season_number}E{episode_number} to {show.log_string} (id={episode_item.id}, aired_at={episode_item.aired_at})"
+                                    )
+                                else:
+                                    logger.trace(
+                                        f"_add_seasons_to_show: Failed to create NEW S{season_number}E{episode_number} for {show.log_string}"
+                                    )
+                    else:
+                        logger.trace(
+                            f"_add_seasons_to_show: Season {season_number} has no episodes from TVDB for {show.log_string}"
+                        )
         except Exception as e:
             logger.error(f"Error adding/updating seasons to show: {str(e)}")
 

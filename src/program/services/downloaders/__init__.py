@@ -84,7 +84,10 @@ class Downloader(Runner[None, DownloaderBase]):
         item: MediaItem,
     ) -> MediaItemGenerator:
         logger.debug(f"Starting download process for {item.log_string} ({item.id})")
-
+        logger.log(
+            "TRACE",
+            f"Downloader.run: item_id={item.id}, item_type={item.type}, streams_count={len(item.streams) if hasattr(item, 'streams') and item.streams else 0}",
+        )
 
         # Check if all services are in cooldown due to circuit breaker
         now = datetime.now()
@@ -96,12 +99,21 @@ class Downloader(Runner[None, DownloaderBase]):
             or self._service_cooldowns[service.key] <= now
         ]
 
+        logger.log(
+            "TRACE",
+            f"Downloader.run: total_services={len(self.initialized_services)}, available_services={len(available_services)}, cooldowns={list(self._service_cooldowns.keys())}",
+        )
+
         if not available_services:
             # All services are in cooldown, reschedule for the earliest available time
             next_attempt = min(self._service_cooldowns.values())
 
             logger.warning(
                 f"All downloader services in cooldown for {item.log_string} ({item.id}), rescheduling for {next_attempt.strftime('%m/%d/%y %H:%M:%S')}"
+            )
+            logger.log(
+                "TRACE",
+                f"Downloader.run: Rescheduling item_id={item.id} for run_at={next_attempt}",
             )
 
             yield RunnerResult(media_items=[item], run_at=next_attempt)
@@ -115,10 +127,18 @@ class Downloader(Runner[None, DownloaderBase]):
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
             sorted_streams = sort_streams_by_quality(item.streams)
+            logger.log(
+                "TRACE",
+                f"Downloader.run: Sorted {len(sorted_streams)} streams for item_id={item.id}",
+            )
 
             tried_streams = 0
 
             for stream in sorted_streams:
+                logger.log(
+                    "TRACE",
+                    f"Downloader.run: Processing stream {stream.infohash} (tried_streams={tried_streams})",
+                )
                 # Try each available service for this stream before blacklisting
                 stream_failed_on_all_services = True
                 stream_hit_circuit_breaker = False
@@ -127,11 +147,19 @@ class Downloader(Runner[None, DownloaderBase]):
                     logger.debug(
                         f"Trying stream {stream.infohash} on {service.key} for {item.log_string}"
                     )
+                    logger.log(
+                        "TRACE",
+                        f"Downloader.run: Attempting stream {stream.infohash} on service={service.key}, item_id={item.id}",
+                    )
 
                     download_result: DownloadedTorrent | None = None
 
                     try:
                         # Validate stream on this specific service
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Validating stream {stream.infohash} on {service.key}",
+                        )
                         container = self.validate_stream_on_service(
                             stream,
                             item,
@@ -142,8 +170,16 @@ class Downloader(Runner[None, DownloaderBase]):
                             logger.debug(
                                 f"Stream {stream.infohash} not available on {service.key}"
                             )
+                            logger.log(
+                                "TRACE",
+                                f"Downloader.run: Stream {stream.infohash} validation FAILED on {service.key}",
+                            )
                             continue
 
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Stream {stream.infohash} validated on {service.key}, attempting download",
+                        )
                         # Try to download using this service
                         download_result = self.download_cached_stream_on_service(
                             stream,
@@ -151,10 +187,18 @@ class Downloader(Runner[None, DownloaderBase]):
                             service,
                         )
 
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Download completed for stream {stream.infohash}, updating item attributes",
+                        )
                         if self.update_item_attributes(item, download_result, service):
                             logger.log(
                                 "DEBRID",
                                 f"Downloaded {item.log_string} from '{stream.raw_title}' [{stream.infohash}] using {service.key}",
+                            )
+                            logger.log(
+                                "TRACE",
+                                f"Downloader.run: Successfully downloaded item_id={item.id} using stream {stream.infohash} on {service.key}",
                             )
 
                             download_success = True
@@ -162,6 +206,10 @@ class Downloader(Runner[None, DownloaderBase]):
 
                             break
                         else:
+                            logger.log(
+                                "TRACE",
+                                f"Downloader.run: Failed to update item attributes for item_id={item.id}, stream {stream.infohash}",
+                            )
                             raise NoMatchingFilesException(
                                 f"No valid files found for {item.log_string} ({item.id})"
                             )
@@ -174,6 +222,10 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.warning(
                             f"Circuit breaker OPEN for {service.key}, trying next service for stream {stream.infohash}"
                         )
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Circuit breaker triggered for {service.key}, cooldown until {self._service_cooldowns[service.key]}",
+                        )
                         stream_hit_circuit_breaker = True
                         hit_circuit_breaker = True
 
@@ -181,11 +233,19 @@ class Downloader(Runner[None, DownloaderBase]):
                         # We want to retry this stream after cooldown
                         if len(self.initialized_services) == 1:
                             stream_failed_on_all_services = False
+                            logger.log(
+                                "TRACE",
+                                f"Downloader.run: Single service mode, not marking stream as failed",
+                            )
                         continue
 
                     except Exception as e:
                         logger.debug(
                             f"Stream {stream.infohash} failed on {service.key}: {e}"
+                        )
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Exception for stream {stream.infohash} on {service.key}: {str(e)}",
                         )
 
                         if download_result and download_result.id:
@@ -195,14 +255,26 @@ class Downloader(Runner[None, DownloaderBase]):
                                 logger.debug(
                                     f"Deleted failed torrent {stream.infohash} for {item.log_string} ({item.id}) on {service.key}."
                                 )
+                                logger.log(
+                                    "TRACE",
+                                    f"Downloader.run: Deleted failed torrent_id={download_result.id} for stream {stream.infohash}",
+                                )
                             except Exception as del_e:
                                 logger.debug(
                                     f"Failed to delete torrent {stream.infohash} for {item.log_string} ({item.id}) on {service.key}: {del_e}"
+                                )
+                                logger.log(
+                                    "TRACE",
+                                    f"Downloader.run: Failed to delete torrent: {str(del_e)}",
                                 )
                         continue
 
                 # If stream succeeded on any service, we're done
                 if download_success:
+                    logger.log(
+                        "TRACE",
+                        f"Downloader.run: Download successful for item_id={item.id}, checking if subtitles needed",
+                    )
                     # Add probed data if required
                     if self.subtitles_enabled:
                         from program.services.media_analysis import (
@@ -210,18 +282,34 @@ class Downloader(Runner[None, DownloaderBase]):
                         )
 
                         if media_analysis_service.should_submit(item):
+                            logger.log(
+                                "TRACE",
+                                f"Downloader.run: Running media analysis for item_id={item.id}",
+                            )
                             success = media_analysis_service.run(item)
 
                             if success:
                                 logger.debug(
                                     f"Media analysis completed for {item.log_string}"
                                 )
+                                logger.log(
+                                    "TRACE",
+                                    f"Downloader.run: Media analysis successful for item_id={item.id}",
+                                )
                                 break
                             else:
                                 logger.error(
                                     f"Failed to analyze media file for {item.log_string}"
                                 )
+                                logger.log(
+                                    "TRACE",
+                                    f"Downloader.run: Media analysis FAILED for item_id={item.id}",
+                                )
                     else:
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Subtitles disabled, breaking out of stream loop",
+                        )
                         break
 
                 # Only blacklist if stream genuinely failed on ALL available services
@@ -234,23 +322,47 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.debug(
                             f"Stream {stream.infohash} hit circuit breaker on single provider, will retry after cooldown"
                         )
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Stream {stream.infohash} will retry after cooldown (single provider mode)",
+                        )
                     else:
                         logger.debug(
                             f"Stream {stream.infohash} failed on all {len(available_services)} available service(s), blacklisting"
                         )
+                        logger.log(
+                            "TRACE",
+                            f"Downloader.run: Blacklisting stream {stream.infohash} after failing on {len(available_services)} services",
+                        )
                         item.blacklist_stream(stream)
 
                 tried_streams += 1
+                logger.log(
+                    "TRACE",
+                    f"Downloader.run: tried_streams incremented to {tried_streams}",
+                )
 
                 if tried_streams >= 3:
+                    logger.log(
+                        "TRACE",
+                        f"Downloader.run: Reached max tried_streams (3), yielding result for item_id={item.id}",
+                    )
                     yield RunnerResult(media_items=[item])
 
         except Exception as e:
             logger.error(
                 f"Unexpected error in downloader for {item.log_string} ({item.id}): {e}"
             )
+            logger.log(
+                "TRACE",
+                f"Downloader.run: EXCEPTION in main try block for item_id={item.id}: {str(e)}",
+            )
 
         if not download_success:
+            logger.log(
+                "TRACE",
+                f"Downloader.run: Download NOT successful for item_id={item.id}, hit_circuit_breaker={hit_circuit_breaker}",
+            )
             # Check if we hit circuit breaker in single-provider mode
             if hit_circuit_breaker and len(self.initialized_services) == 1:
                 # Reschedule for after cooldown instead of failing
@@ -258,6 +370,10 @@ class Downloader(Runner[None, DownloaderBase]):
 
                 logger.warning(
                     f"Single provider hit circuit breaker for {item.log_string} ({item.id}), rescheduling for {next_attempt.strftime('%m/%d/%y %H:%M:%S')}"
+                )
+                logger.log(
+                    "TRACE",
+                    f"Downloader.run: Rescheduling item_id={item.id} due to circuit breaker (single provider), run_at={next_attempt}",
                 )
 
                 yield RunnerResult(media_items=[item], run_at=next_attempt)
@@ -267,7 +383,15 @@ class Downloader(Runner[None, DownloaderBase]):
                 logger.debug(
                     f"Failed to download any streams for {item.log_string} ({item.id})"
                 )
+                logger.log(
+                    "TRACE",
+                    f"Downloader.run: Failed to download item_id={item.id}, no retry scheduled",
+                )
         else:
+            logger.log(
+                "TRACE",
+                f"Downloader.run: Download SUCCESSFUL for item_id={item.id}, clearing cooldowns",
+            )
             # Clear service cooldowns on successful download
             self._service_cooldowns.clear()
 
@@ -707,46 +831,58 @@ class Downloader(Runner[None, DownloaderBase]):
         2. download_cached_stream_on_service (adds torrent and gets info)
         3. update_item_attributes (matches files and sets active_stream)
         """
-        
+
         # 1. Ensure stream is persisted on item (relationship)
         if stream not in item.streams:
             item.streams.append(stream)
             # Session commit is expected to be handled by caller
-        
+
         # 2. Validate stream and get container (same as standard flow)
         container = self.validate_stream_on_service(
-            stream, 
-            item, 
-            service, 
+            stream,
+            item,
+            service,
         )
-        
+
         if not container:
-            logger.warning(f"START_MANUAL_DOWNLOAD: Stream {stream.infohash} not available on {service.key}")
+            logger.warning(
+                f"START_MANUAL_DOWNLOAD: Stream {stream.infohash} not available on {service.key}"
+            )
             return False
-        
+
         if container and file_ids and container.files:
             # Filter the container.files list to only include selected files
             container.files = [f for f in container.files if f.file_id in file_ids]
 
-        logger.info(f"START_MANUAL_DOWNLOAD: Validated stream {stream.infohash} on {service.key}")
-        
+        logger.info(
+            f"START_MANUAL_DOWNLOAD: Validated stream {stream.infohash} on {service.key}"
+        )
+
         # 3. Download using standard method (same as standard flow)
         try:
             result = self.download_cached_stream_on_service(stream, container, service)
         except Exception as e:
-            logger.error(f"START_MANUAL_DOWNLOAD: download_cached_stream_on_service raised: {e}")
+            logger.error(
+                f"START_MANUAL_DOWNLOAD: download_cached_stream_on_service raised: {e}"
+            )
             return False
-        
+
         if not result:
-            logger.warning(f"START_MANUAL_DOWNLOAD: download_cached_stream_on_service returned None")
+            logger.warning(
+                f"START_MANUAL_DOWNLOAD: download_cached_stream_on_service returned None"
+            )
             return False
-        
+
         # 4. Update item attributes (same as standard flow)
         if self.update_item_attributes(item, result, service):
             # Store state - Manual download completes the 'Downloader' phase, so we are now Downloaded
             item.store_state(States.Downloaded)
-            logger.info(f"START_MANUAL_DOWNLOAD: Successfully downloaded {item.log_string} from '{stream.raw_title}'")
+            logger.info(
+                f"START_MANUAL_DOWNLOAD: Successfully downloaded {item.log_string} from '{stream.raw_title}'"
+            )
             return True
         else:
-            logger.warning(f"START_MANUAL_DOWNLOAD: update_item_attributes failed for {item.log_string}")
+            logger.warning(
+                f"START_MANUAL_DOWNLOAD: update_item_attributes failed for {item.log_string}"
+            )
             return False

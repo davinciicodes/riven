@@ -325,16 +325,16 @@ class Program(threading.Thread):
                 continue
 
             try:
-                event = self.em.next()
-
-                if self.enable_trace:
-                    self.dump_tracemalloc()
+                # Blocks until a ready event is available (up to 1s), then returns it.
+                # Woken immediately when add_event_to_queue notifies _work_available.
+                event = self.em.next(timeout=1.0)
             except Empty:
                 if self.enable_trace:
                     self.dump_tracemalloc()
-
-                time.sleep(0.1)
                 continue
+
+            if self.enable_trace:
+                self.dump_tracemalloc()
 
             if event.item_id:
                 existing_item = db_functions.get_item_by_id(event.item_id)

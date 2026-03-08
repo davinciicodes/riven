@@ -2,6 +2,7 @@ import subprocess
 from typing import Literal
 import orjson
 from fractions import Fraction
+from loguru import logger
 from pydantic import BaseModel, Field
 
 
@@ -182,13 +183,19 @@ def parse_media_url(url: str) -> FFProbeMediaMetadata | None:
         ]
 
         try:
+            logger.log("TRACE", f"ffprobe: Starting subprocess for URL: {url[:100]}...")
             result = subprocess.run(
                 cmd,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=False,  # keep bytes for orjson
+                timeout=30,  # 30 second timeout to prevent indefinite hangs
             )
+            logger.log("TRACE", f"ffprobe: Subprocess completed successfully for URL")
+        except subprocess.TimeoutExpired as exc:
+            logger.warning(f"ffprobe timed out after 30s while probing {url[:100]}...")
+            raise RuntimeError(f"ffprobe timeout after 30s while probing URL") from exc
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr.decode("utf-8", errors="ignore") if exc.stderr else ""
 
