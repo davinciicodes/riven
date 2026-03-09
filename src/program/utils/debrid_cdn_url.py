@@ -106,6 +106,12 @@ class DebridCDNUrl:
                 logger.error(
                     f"Connection error while validating CDN URL {self.url}: {e}"
                 )
+                if self.url:
+                    from program.utils.cdn_health import record_connect_error
+                    record_connect_error(self.url, self.provider)
+                if attempt == 1 and attempt_refresh:
+                    if url := self._refresh():
+                        self.url = url
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
 

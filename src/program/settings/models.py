@@ -70,6 +70,11 @@ class AllDebridModel(Observable):
     api_key: str = Field(default="", description="AllDebrid API key")
 
 
+class PremiumizeModel(Observable):
+    enabled: bool = Field(default=False, description="Enable Premiumize")
+    api_key: str = Field(default="", description="Premiumize API key")
+
+
 class DownloadersModel(Observable):
     video_extensions: list[str] = Field(
         default_factory=lambda: list[str](["mp4", "mkv", "avi"]),
@@ -105,6 +110,10 @@ class DownloadersModel(Observable):
     all_debrid: AllDebridModel = Field(
         default_factory=lambda: AllDebridModel(),
         description="AllDebrid downloader configuration",
+    )
+    premiumize: PremiumizeModel = Field(
+        default_factory=lambda: PremiumizeModel(),
+        description="Premiumize downloader configuration",
     )
 
 

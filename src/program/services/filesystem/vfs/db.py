@@ -15,6 +15,7 @@ from program.services.streaming.exceptions import (
 from program.media.item import MediaItem
 from program.types import Event
 from routers.secure.items import apply_item_mutation
+from program.utils.cdn_health import get_provider_score, sort_services_by_health
 from program.utils.debrid_cdn_url import DebridCDNUrl
 
 if TYPE_CHECKING:
@@ -114,6 +115,16 @@ class VFSDatabase:
 
             return None
 
+        # If CDN health data shows the current provider is known-dead, skip the
+        # re-unrestrict attempt (it would return another dead CDN URL) and go
+        # straight to the alternate-provider fallback.
+        if entry.provider and get_provider_score(entry.provider) == 0.0:
+            logger.debug(
+                f"CDN health: {entry.provider} is known dead, "
+                f"skipping re-unrestrict for {entry.original_filename}"
+            )
+            return self._try_alternate_provider(entry, session)
+
         from program.program import Program
 
         # Find service by matching the key attribute (services dict uses class as key)
@@ -144,6 +155,7 @@ class VFSDatabase:
                         )
 
                         return entry.unrestricted_url
+                    # Primary provider gave a URL but its CDN is unreachable — fall through to alternate providers
             except DebridServiceLinkUnavailable as e:
                 logger.warning(
                     f"Failed to unrestrict URL for {entry.original_filename}: {e}"
@@ -180,6 +192,103 @@ class VFSDatabase:
                     f"Unexpected error when unrestricting URL for {entry.original_filename}: {e}"
                 )
 
+        return self._try_alternate_provider(entry, session)
+
+    def _try_alternate_provider(self, entry: MediaEntry, session: Session) -> str | None:
+        """
+        Try to get a working CDN URL from an alternate debrid provider.
+
+        Called when the primary provider's CDN is unreachable. Iterates over other
+        initialized services, checks instant availability for the same infohash,
+        and switches the entry to the first provider whose CDN validates successfully.
+        """
+
+        if not self.downloader:
+            return None
+
+        media_item = entry.media_item
+        if not media_item or not media_item.active_stream:
+            return None
+
+        infohash = media_item.active_stream.infohash
+        item_type = media_item.type
+        original_provider = entry.provider
+
+        for service in sort_services_by_health(self.downloader.initialized_services):
+            if service.key == original_provider:
+                continue
+
+            try:
+                logger.info(
+                    f"CDN fallback: trying {service.key} for {entry.original_filename} (infohash={infohash})"
+                )
+
+                container = service.get_instant_availability(infohash, item_type)
+
+                if not container or not container.files:
+                    logger.debug(
+                        f"CDN fallback: {service.key} does not have {infohash} cached"
+                    )
+                    continue
+
+                matching_file = next(
+                    (f for f in container.files if f.filename == entry.original_filename),
+                    None,
+                )
+
+                if not matching_file or not matching_file.download_url:
+                    logger.debug(
+                        f"CDN fallback: no matching file '{entry.original_filename}' on {service.key}"
+                    )
+                    continue
+
+                unrestricted = service.unrestrict_link(matching_file.download_url)
+                if not unrestricted:
+                    continue
+
+                # Temporarily mutate entry to test the new CDN URL
+                old_provider = entry.provider
+                old_download_url = entry.download_url
+                old_unrestricted_url = entry.unrestricted_url
+                old_provider_download_id = entry.provider_download_id
+
+                entry.provider = service.key
+                entry.download_url = matching_file.download_url
+                entry.unrestricted_url = unrestricted.download
+                if container.torrent_id:
+                    entry.provider_download_id = str(container.torrent_id)
+
+                cdn_ok = DebridCDNUrl(entry).validate(attempt_refresh=False)
+
+                if not cdn_ok:
+                    # Restore original values and try next service
+                    entry.provider = old_provider
+                    entry.download_url = old_download_url
+                    entry.unrestricted_url = old_unrestricted_url
+                    entry.provider_download_id = old_provider_download_id
+                    logger.debug(
+                        f"CDN fallback: {service.key} CDN URL also unreachable for {entry.original_filename}"
+                    )
+                    continue
+
+                session.merge(entry)
+                session.commit()
+
+                logger.info(
+                    f"CDN fallback: switched '{entry.original_filename}' "
+                    f"from {original_provider} to {service.key}"
+                )
+                return entry.unrestricted_url
+
+            except Exception as e:
+                logger.warning(
+                    f"CDN fallback: {service.key} failed for {entry.original_filename}: {e}"
+                )
+                continue
+
+        logger.warning(
+            f"CDN fallback: no alternate provider could serve {entry.original_filename}"
+        )
         return None
 
     def reset_item_for_link_failure(self, original_filename: str) -> None:

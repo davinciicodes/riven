@@ -23,6 +23,7 @@ from program.media.state import States
 from program.scheduling.models import ScheduledStatus, ScheduledTask
 from program.settings import settings_manager
 from program.types import Event
+from program.utils.cdn_health import check_cdn_health
 from program.utils.logging import log_cleaner, logger
 from program.apis.tvdb_api import SeriesRelease
 from schemas.tvdb.models.series_airs_days import SeriesAirsDays
@@ -86,6 +87,9 @@ class ProgramScheduler:
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
+
+        # CDN health monitoring — probes active CDN nodes every 5 minutes
+        scheduled_functions[check_cdn_health] = {"interval": 5 * 60}
 
         for func, config in scheduled_functions.items():
             self.scheduler.add_job(
