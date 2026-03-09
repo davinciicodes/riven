@@ -248,8 +248,6 @@ class PremiumizeDownloader(DownloaderBase):
         Unlike Real-Debrid/DebridLink, we use the dedicated cache check endpoint first —
         no need to add the torrent just to probe its status.
         """
-        transfer_id: str | None = None
-
         try:
             if not self._is_cached(infohash):
                 logger.debug(f"Premiumize: {infohash} is not cached")
@@ -260,9 +258,6 @@ class PremiumizeDownloader(DownloaderBase):
             if not content:
                 logger.debug(f"Premiumize: directdl returned no content for {infohash}")
                 return None
-
-            # Create a transfer to obtain a stable transfer ID for TorrentInfo
-            transfer_id = self.add_torrent(infohash)
 
             files = list[DebridFile]()
             torrent_files = dict[int, TorrentFile]()
@@ -291,15 +286,10 @@ class PremiumizeDownloader(DownloaderBase):
 
             if not files:
                 logger.debug(f"Premiumize: no valid files for {infohash} after filtering")
-                if transfer_id:
-                    try:
-                        self.delete_torrent(transfer_id)
-                    except Exception:
-                        pass
                 return None
 
             info = TorrentInfo(
-                id=transfer_id,
+                id=infohash,
                 name=infohash,
                 status="downloaded",
                 infohash=infohash,
@@ -308,34 +298,19 @@ class PremiumizeDownloader(DownloaderBase):
             )
 
             container = TorrentContainer(infohash=infohash, files=files)
-            container.torrent_id = transfer_id
+            container.torrent_id = infohash
             container.torrent_info = info
 
             return container
 
         except CircuitBreakerOpen:
             logger.debug(f"Circuit breaker OPEN for Premiumize; skipping {infohash}")
-            if transfer_id:
-                try:
-                    self.delete_torrent(transfer_id)
-                except Exception:
-                    pass
             raise
         except PremiumizeError as e:
             logger.warning(f"Premiumize availability check failed [{infohash}]: {e}")
-            if transfer_id:
-                try:
-                    self.delete_torrent(transfer_id)
-                except Exception:
-                    pass
             return None
         except Exception as e:
             logger.debug(f"Premiumize availability check failed [{infohash}]: {e}")
-            if transfer_id:
-                try:
-                    self.delete_torrent(transfer_id)
-                except Exception:
-                    pass
             return None
 
     def add_torrent(self, infohash: str) -> str:

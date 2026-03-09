@@ -113,7 +113,6 @@ def setup_logger(
             "format": log_format,
             "backtrace": False,
             "diagnose": False,
-            "enqueue": True,
         }
     ]
 

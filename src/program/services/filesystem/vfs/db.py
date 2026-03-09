@@ -144,9 +144,11 @@ class VFSDatabase:
                 if new_unrestricted:
                     entry.unrestricted_url = new_unrestricted.download
 
-                    cdn_url = DebridCDNUrl(entry)
+                    with session.no_autoflush:
+                        cdn_url = DebridCDNUrl(entry)
+                        cdn_validate_ok = cdn_url.validate(attempt_refresh=False)
 
-                    if cdn_url.validate(attempt_refresh=False):
+                    if cdn_validate_ok:
                         session.merge(entry)
                         session.commit()
 
@@ -191,6 +193,13 @@ class VFSDatabase:
                 logger.warning(
                     f"Unexpected error when unrestricting URL for {entry.original_filename}: {e}"
                 )
+                # Reset session so _try_alternate_provider can run with a clean state.
+                # The exception may have left the session in a rolled-back state, which
+                # would cause any subsequent lazy-load (e.g. entry.media_item) to fail.
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
 
         return self._try_alternate_provider(entry, session)
 

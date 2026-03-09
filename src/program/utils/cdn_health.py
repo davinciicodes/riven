@@ -25,8 +25,7 @@ from loguru import logger
 
 _TEST_BYTES = 256 * 1024  # 256 KB range request per node
 _TEST_TIMEOUT = 10  # seconds per host test
-# No time window — test all unique CDN hostnames from the DB.
-# Expired URLs return 404 (handled gracefully), ConnectError marks nodes dead.
+_URL_MAX_AGE_HOURS = 48  # only test hosts with URLs updated within this window
 
 # --- State -------------------------------------------------------------------
 
@@ -138,13 +137,18 @@ def check_cdn_health() -> None:
     """
     APScheduler job: probe CDN nodes from recent MediaEntry unrestricted URLs.
 
-    Queries the DB for entries updated within the last hour (URLs are likely
-    still valid), deduplicates by hostname, and fires a 256 KB range request
-    to each unique CDN node to measure latency and throughput.
+    Queries the DB for entries with a URL updated within _URL_MAX_AGE_HOURS,
+    deduplicates by hostname, and fires a 256 KB range request to each unique
+    CDN node to measure latency and throughput. Inactive providers (no recent
+    downloads) are naturally excluded — their URLs age out of the window.
     """
     try:
+        from datetime import datetime, timedelta
+
         from program.db.db import db_session
         from program.media.media_entry import MediaEntry
+
+        cutoff = datetime.utcnow() - timedelta(hours=_URL_MAX_AGE_HOURS)
 
         with db_session() as session:
             rows = (
@@ -152,6 +156,7 @@ def check_cdn_health() -> None:
                 .filter(
                     MediaEntry.unrestricted_url.isnot(None),
                     MediaEntry.provider.isnot(None),
+                    MediaEntry.updated_at >= cutoff,
                 )
                 .all()
             )
@@ -164,13 +169,15 @@ def check_cdn_health() -> None:
                 hosts_to_test[hostname] = (url, provider)
 
         if not hosts_to_test:
-            logger.trace("CDN health check: no recent CDN URLs found in DB")
+            logger.trace(f"CDN health check: no CDN URLs updated in last {_URL_MAX_AGE_HOURS}h")
             return
 
         logger.debug(f"CDN health check: testing {len(hosts_to_test)} CDN node(s)")
 
         for hostname, (url, provider) in hosts_to_test.items():
             _test_host(hostname, url, provider)
+
+        _log_provider_summary(hosts_to_test)
 
     except Exception as e:
         logger.warning(f"CDN health check failed: {e}")
@@ -219,12 +226,40 @@ def _test_host(hostname: str, url: str, provider: str) -> None:
 
     except httpx.ConnectError:
         _mark_unreachable(hostname, provider)
-        logger.debug(f"CDN health: {hostname} ({provider}) — unreachable (ConnectError)")
+        logger.warning(f"CDN health: {hostname} ({provider}) — unreachable (ConnectError)")
     except httpx.TimeoutException:
         _mark_unreachable(hostname, provider)
-        logger.debug(f"CDN health: {hostname} ({provider}) — unreachable (timeout)")
+        logger.warning(f"CDN health: {hostname} ({provider}) — unreachable (timeout)")
     except Exception as e:
         logger.debug(f"CDN health: {hostname} ({provider}) — test error: {e}")
+
+
+def _log_provider_summary(hosts_tested: dict[str, tuple[str, str]]) -> None:
+    """Log a one-line INFO summary of CDN health per provider after a check run."""
+    providers = {provider for _, provider in hosts_tested.values()}
+
+    parts = []
+    for provider in sorted(providers):
+        with _lock:
+            stats = [s for h, s in _host_stats.items() if s.provider == provider and h in hosts_tested]
+
+        if not stats:
+            parts.append(f"{provider}: no data")
+            continue
+
+        reachable = [s for s in stats if s.is_reachable]
+        dead = len(stats) - len(reachable)
+
+        if reachable:
+            avg_mbps = sum(s.throughput_mbps for s in reachable) / len(reachable)
+            node_str = f"{len(reachable)} node{'s' if len(reachable) != 1 else ''}"
+            dead_str = f", {dead} dead" if dead else ""
+            parts.append(f"{provider}: {avg_mbps:.1f} Mbps ({node_str}{dead_str})")
+        else:
+            parts.append(f"{provider}: ALL DEAD ({dead} node{'s' if dead != 1 else ''})")
+
+    if parts:
+        logger.info("CDN health: " + " | ".join(parts))
 
 
 def _mark_unreachable(hostname: str, provider: str) -> None:

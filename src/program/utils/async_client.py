@@ -23,6 +23,7 @@ class AsyncClient(httpx.AsyncClient):
         super().__init__(
             http2=True,
             follow_redirects=True,
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
             limits=httpx.Limits(
                 max_keepalive_connections=100,
                 max_connections=1000,

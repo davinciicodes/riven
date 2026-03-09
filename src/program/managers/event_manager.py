@@ -11,6 +11,8 @@ from threading import Lock
 from typing import TYPE_CHECKING
 
 import sqlalchemy.orm
+from sqlalchemy.exc import OperationalError, PendingRollbackError
+from sqlalchemy.orm.exc import StaleDataError
 from loguru import logger
 from pydantic import BaseModel
 
@@ -57,12 +59,16 @@ class EventManager:
     Manages the execution of services and the handling of events.
     """
 
+<<<<<<< Updated upstream
     _MULTI_WORKER_SERVICES = {
         "Scraping": 2,
         "Downloader": 1,
         "Symlinker": 1,
         "PostProcessing": 1,
     }
+=======
+    _MULTI_WORKER_SERVICES = {"Scraping": 2, "Downloader": 1, "Symlinker": 1, "PostProcessing": 1}
+>>>>>>> Stashed changes
 
     # Priority for the state-based queue ordering (lower = higher priority).
     # Items without a cached state get 999 (lowest) so they don't jump the queue.
@@ -220,8 +226,20 @@ class EventManager:
             logger.error(f"Error in future for {future_with_event}: {e}")
             logger.exception(traceback.format_exc())
 
-            # TODO(spoked): Here we should remove it from the running events so it can be retried, right?
-            # self.remove_event_from_queue(future.event)
+            if isinstance(e, (PendingRollbackError, OperationalError, StaleDataError)):
+                item_id = future_with_event.event.item_id if future_with_event.event else None
+                if item_id:
+                    try:
+                        with db_session() as session:
+                            session.execute(
+                                sqlalchemy.text('UPDATE "MediaItem" SET last_state = \'Indexed\', scraped_at = NULL WHERE id = :id'),
+                                {"id": item_id}
+                            )
+                        logger.warning(f"DB connection dropped for item {item_id} — reset to Indexed for retry")
+                    except Exception as reset_err:
+                        logger.error(f"Failed to reset item {item_id} after connection drop: {reset_err}")
+                if future_with_event.event:
+                    self.remove_event_from_running(future_with_event.event)
 
         log_message = f"Service {service.__class__.__name__} executed"
 
@@ -584,9 +602,13 @@ class EventManager:
                 # If there are future-scheduled events, only wait until the earliest one.
                 if self._queued_events:
                     earliest = min(e.run_at for e in self._queued_events)
+<<<<<<< Updated upstream
                     wait_secs = max(
                         0.0, min(remaining, (earliest - now).total_seconds())
                     )
+=======
+                    wait_secs = max(0.0, min(remaining, (earliest - now).total_seconds()))
+>>>>>>> Stashed changes
                 else:
                     wait_secs = remaining
 
@@ -644,7 +666,13 @@ class EventManager:
                         session.query(MediaItem)
                         .filter_by(id=event.item_id)
                         .options(
+<<<<<<< Updated upstream
                             sqlalchemy.orm.load_only(MediaItem.id, MediaItem.last_state)
+=======
+                            sqlalchemy.orm.load_only(
+                                MediaItem.id, MediaItem.last_state
+                            )
+>>>>>>> Stashed changes
                         )
                         .one_or_none()
                     )

@@ -89,9 +89,10 @@ class DebridCDNUrl:
                     else:
                         return None
 
-                with httpx.Client(proxy=proxy) as client:
-                    with client.stream(method="GET", url=self.url) as response:
-                        response.raise_for_status()
+                with httpx.Client(proxy=proxy, timeout=10, follow_redirects=True) as client:
+                    with client.stream(method="GET", url=self.url, headers={"Range": "bytes=0-4095"}) as response:
+                        if response.status_code not in (200, 206):
+                            response.raise_for_status()
 
                         if self.filename:
                             _VALIDATION_CACHE[self.filename] = (
@@ -157,22 +158,28 @@ class DebridCDNUrl:
 
         from program.services.filesystem.vfs.db import VFSDatabase
 
-        with db_session() as session:
-            entry = session.merge(self.entry)
+        try:
+            with db_session() as session:
+                entry = session.merge(self.entry)
 
-            url = di[VFSDatabase].refresh_unrestricted_url(
-                entry=entry,
-                session=session,
-            )
+                url = di[VFSDatabase].refresh_unrestricted_url(
+                    entry=entry,
+                    session=session,
+                )
 
-            if not url:
-                logger.error("Could not refresh CDN URL; no URL returned from refresh")
+                if not url:
+                    logger.error("Could not refresh CDN URL; no URL returned from refresh")
 
-                return None
+                    return None
 
-            if url == self.url:
-                raise RefreshedURLIdenticalException()
+                if url == self.url:
+                    raise RefreshedURLIdenticalException()
 
-            self.url = url
+                self.url = url
 
-            return self.url
+                return self.url
+        except RefreshedURLIdenticalException:
+            raise
+        except Exception as e:
+            logger.debug(f"CDN URL refresh failed for {self.filename}: {e}")
+            return None

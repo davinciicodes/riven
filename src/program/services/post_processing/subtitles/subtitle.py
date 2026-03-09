@@ -5,6 +5,7 @@ Handles subtitle fetching from various providers and stores them in the database
 for serving via RivenVFS.
 """
 
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 from sqlalchemy.orm import object_session
 from loguru import logger
 
@@ -19,7 +20,6 @@ from program.services.post_processing.subtitles.providers.base import (
 )
 from program.core.analysis_service import AnalysisService
 from .providers.opensubtitles import OpenSubtitlesProvider
-from .utils import calculate_opensubtitles_hash
 
 
 class SubtitleService(AnalysisService[SubtitleConfig]):
@@ -346,68 +346,63 @@ class SubtitleService(AnalysisService[SubtitleConfig]):
         """
         Calculate OpenSubtitles hash for the video file.
 
+        Reads the first and last 64KB directly from the CDN URL using a sync
+        HTTP client, bypassing the FUSE mount to avoid trio/asyncio conflicts.
+
         Args:
             item: MediaItem with filesystem entry
 
         Returns:
             OpenSubtitles hash or None if calculation fails
         """
+        import struct
+        import httpx
+
+        CHUNK_SIZE = 65536  # 64KB
+
         try:
             media_entry = item.media_entry
-
             assert media_entry
 
-            # Get file size from filesystem entry
             file_size = media_entry.file_size
-
-            if not file_size or file_size < 128 * 1024:  # 128KB minimum
+            if not file_size or file_size < CHUNK_SIZE * 2:
                 logger.debug(
                     f"File too small ({file_size} bytes) to calculate hash for {item.log_string}"
                 )
                 return None
 
-            # Get the mounted VFS path
-            from program.settings import settings_manager
-
-            mount_path = settings_manager.settings.filesystem.mount_path
-
-            # Get VFS paths from MediaEntry (use base path)
-            vfs_paths = media_entry.get_all_vfs_paths()
-
-            if not vfs_paths:
-                logger.debug(
-                    f"No VFS paths for {item.log_string}, cannot calculate hash"
-                )
+            cdn_url = media_entry.unrestricted_url or media_entry.download_url
+            if not cdn_url:
+                logger.debug(f"No CDN URL for {item.log_string}, cannot calculate hash")
                 return None
 
-            vfs_path = vfs_paths[0]  # Use base path
+            with httpx.Client(timeout=30, follow_redirects=True) as client:
+                # First 64KB
+                r1 = client.get(cdn_url, headers={"Range": f"bytes=0-{CHUNK_SIZE - 1}"})
+                if r1.status_code not in (200, 206):
+                    logger.debug(f"CDN returned {r1.status_code} for first chunk of {item.log_string}")
+                    return None
+                first_chunk = r1.content
 
-            # Construct the full path on the host filesystem
-            import os
+                # Last 64KB
+                last_start = max(0, file_size - CHUNK_SIZE)
+                r2 = client.get(cdn_url, headers={"Range": f"bytes={last_start}-{file_size - 1}"})
+                if r2.status_code not in (200, 206):
+                    logger.debug(f"CDN returned {r2.status_code} for last chunk of {item.log_string}")
+                    return None
+                last_chunk = r2.content
 
-            full_path = os.path.join(mount_path, vfs_path.lstrip("/"))
+            hash_value = file_size
+            for chunk in (first_chunk, last_chunk):
+                for i in range(0, len(chunk), 8):
+                    if i + 8 <= len(chunk):
+                        value = struct.unpack("<Q", chunk[i : i + 8])[0]
+                        hash_value = (hash_value + value) & 0xFFFFFFFFFFFFFFFF
 
-            # Check if file exists and is accessible
-            if not os.path.exists(full_path):
-                logger.debug(
-                    f"VFS file not accessible at {full_path} for {item.log_string}"
-                )
-                return None
+            video_hash = f"{hash_value:016x}"
+            logger.debug(f"Calculated OpenSubtitles hash for {item.log_string}: {video_hash}")
+            return video_hash
 
-            # Calculate hash using the mounted VFS file
-            with open(full_path, "rb") as f:
-                video_hash = calculate_opensubtitles_hash(f, file_size)
-                logger.debug(
-                    f"Calculated OpenSubtitles hash for {item.log_string}: {video_hash}"
-                )
-
-                return video_hash
-
-        except FileNotFoundError:
-            logger.debug(
-                f"VFS file not found for {item.log_string}, cannot calculate hash"
-            )
-            return None
         except Exception as e:
             logger.error(f"Failed to calculate video hash for {item.log_string}: {e}")
             return None
@@ -552,6 +547,10 @@ class SubtitleService(AnalysisService[SubtitleConfig]):
                 logger.error(
                     f"Failed to download subtitle from {subtitle_info.provider}: {e}"
                 )
+                if isinstance(e, (PendingRollbackError, OperationalError)):
+                    _session = object_session(item)
+                    if _session:
+                        _session.rollback()
 
         logger.warning(
             f"Failed to download any {language} subtitle for {item.log_string}"
