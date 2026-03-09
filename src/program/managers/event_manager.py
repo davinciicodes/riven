@@ -57,16 +57,12 @@ class EventManager:
     Manages the execution of services and the handling of events.
     """
 
-<<<<<<< Updated upstream
     _MULTI_WORKER_SERVICES = {
-        "Scraping": 4,
+        "Scraping": 2,
         "Downloader": 1,
         "Symlinker": 1,
         "PostProcessing": 1,
     }
-=======
-    _MULTI_WORKER_SERVICES = {"Scraping": 2, "Downloader": 1, "Symlinker": 1, "PostProcessing": 1}
->>>>>>> Stashed changes
 
     # Priority for the state-based queue ordering (lower = higher priority).
     # Items without a cached state get 999 (lowest) so they don't jump the queue.
@@ -588,13 +584,9 @@ class EventManager:
                 # If there are future-scheduled events, only wait until the earliest one.
                 if self._queued_events:
                     earliest = min(e.run_at for e in self._queued_events)
-<<<<<<< Updated upstream
                     wait_secs = max(
                         0.0, min(remaining, (earliest - now).total_seconds())
                     )
-=======
-                    wait_secs = max(0.0, min(remaining, (earliest - now).total_seconds()))
->>>>>>> Stashed changes
                 else:
                     wait_secs = remaining
 
@@ -652,13 +644,7 @@ class EventManager:
                         session.query(MediaItem)
                         .filter_by(id=event.item_id)
                         .options(
-<<<<<<< Updated upstream
                             sqlalchemy.orm.load_only(MediaItem.id, MediaItem.last_state)
-=======
-                            sqlalchemy.orm.load_only(
-                                MediaItem.id, MediaItem.last_state
-                            )
->>>>>>> Stashed changes
                         )
                         .one_or_none()
                     )
