@@ -408,6 +408,24 @@ class PremiumizeDownloader(DownloaderBase):
             filesize=0,
         )
 
+    def get_fresh_cdn_url(self, infohash: str, filename: str) -> str | None:
+        """
+        Re-call directdl with the infohash to get a fresh CDN URL for an expired file.
+
+        Premiumize CDN URLs are time-limited signed URLs. When one expires (403),
+        calling directdl again with the same infohash returns a fresh URL.
+        """
+        import os
+        try:
+            content = self._get_directdl(infohash)
+            for item in content:
+                if item.path and os.path.basename(item.path) == filename:
+                    return item.link
+            return None
+        except Exception as e:
+            logger.debug(f"Premiumize get_fresh_cdn_url failed for {filename}: {e}")
+            return None
+
     def get_user_info(self) -> UserInfo | None:
         """
         Get normalized user information from Premiumize.

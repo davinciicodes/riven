@@ -139,10 +139,26 @@ class VFSDatabase:
 
         if service and entry.download_url:
             try:
-                new_unrestricted = service.unrestrict_link(entry.download_url)
+                # For providers whose download_url is already a CDN URL (e.g. Premiumize),
+                # unrestrict_link() is a no-op that returns the same expired URL. Use the
+                # infohash from active_stream to call directdl again for a fresh URL instead.
+                new_url: str | None = None
+                if hasattr(service, "get_fresh_cdn_url"):
+                    with session.no_autoflush:
+                        active_stream = entry.media_item and entry.media_item.active_stream
+                    infohash = active_stream.infohash if active_stream else None
+                    if infohash:
+                        logger.debug(
+                            f"Refreshing CDN URL for {entry.original_filename} via {service.key} directdl"
+                        )
+                        new_url = service.get_fresh_cdn_url(infohash, entry.original_filename)
 
-                if new_unrestricted:
-                    entry.unrestricted_url = new_unrestricted.download
+                if new_url is None:
+                    unrestricted = service.unrestrict_link(entry.download_url)
+                    new_url = unrestricted.download if unrestricted else None
+
+                if new_url:
+                    entry.unrestricted_url = new_url
 
                     with session.no_autoflush:
                         cdn_url = DebridCDNUrl(entry)

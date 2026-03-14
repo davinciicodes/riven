@@ -1936,6 +1936,8 @@ class RivenVFS(pyfuse3.Operations):
                         stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
                     )
 
+                self._record_link_failure(original_filename)
+
                 raise pyfuse3.FUSEError(errno.EACCES) from e
             except* DebridServiceRangeNotSatisfiableException as e:
                 for exc in e.exceptions:

@@ -117,7 +117,7 @@ class DebridCDNUrl:
                 status_code = e.response.status_code
 
                 if (
-                    status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE)
+                    status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE, HTTPStatus.FORBIDDEN)
                     and attempt == 1
                 ):
                     # Only attempt to refresh the URL on the first failure
