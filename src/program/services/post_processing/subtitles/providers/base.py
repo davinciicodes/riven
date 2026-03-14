@@ -18,6 +18,7 @@ class SubtitleItem(BaseModel):
     movie_name: str | None
     provider: str
     score: float
+    download_url: str | None = None  # Pre-resolved download URL (used by providers like Subdl)
 
 
 class SubtitleProvider(ABC):

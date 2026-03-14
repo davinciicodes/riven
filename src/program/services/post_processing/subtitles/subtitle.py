@@ -20,6 +20,9 @@ from program.services.post_processing.subtitles.providers.base import (
 )
 from program.core.analysis_service import AnalysisService
 from .providers.opensubtitles import OpenSubtitlesProvider
+from .providers.opensubtitles_rest import OpenSubtitlesRestProvider
+from .providers.subdl import SubdlProvider
+from .providers.gestdown import GestdownProvider
 
 
 class SubtitleService(AnalysisService[SubtitleConfig]):
@@ -73,9 +76,32 @@ class SubtitleService(AnalysisService[SubtitleConfig]):
             except Exception as e:
                 logger.error(f"Failed to initialize OpenSubtitles provider: {e}")
 
-        # Add more providers here in the future
-        # if provider_configs.get("opensubtitlescom", {}).get("enabled"):
-        #     ...
+        # Initialize Subdl provider
+        if provider_configs.subdl.enabled:
+            try:
+                provider = SubdlProvider(api_key=provider_configs.subdl.api_key)
+                self.providers.append(provider)
+                logger.debug("Subdl provider initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Subdl provider: {e}")
+
+        # Initialize OpenSubtitles REST provider
+        if provider_configs.opensubtitles_rest.enabled:
+            try:
+                provider = OpenSubtitlesRestProvider(api_key=provider_configs.opensubtitles_rest.api_key)
+                self.providers.append(provider)
+                logger.debug("OpenSubtitles REST provider initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenSubtitles REST provider: {e}")
+
+        # Initialize Gestdown provider (Addic7ed, TV shows only)
+        if provider_configs.gestdown.enabled:
+            try:
+                provider = GestdownProvider()
+                self.providers.append(provider)
+                logger.debug("Gestdown provider initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Gestdown provider: {e}")
 
     @classmethod
     def _parse_languages(cls, language_codes: list[str]) -> list[str]:

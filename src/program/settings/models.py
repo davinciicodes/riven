@@ -869,10 +869,36 @@ class SubtitleProviderConfig(Observable):
     enabled: bool = Field(default=False, description="Enable this subtitle provider")
 
 
+class SubdlProviderConfig(Observable):
+    enabled: bool = Field(default=False, description="Enable Subdl subtitle provider")
+    api_key: str = Field(default="", description="Subdl API key (free at subdl.com/user/api)")
+
+
+class OpenSubtitlesRestProviderConfig(Observable):
+    enabled: bool = Field(default=False, description="Enable OpenSubtitles REST (opensubtitles.com) provider")
+    api_key: str = Field(default="", description="OpenSubtitles.com API key (free at opensubtitles.com/consumers)")
+
+
+class GestdownProviderConfig(Observable):
+    enabled: bool = Field(default=False, description="Enable Gestdown provider (Addic7ed subtitles, TV shows only)")
+
+
 class SubtitleProvidersDict(Observable):
     opensubtitles: SubtitleProviderConfig = Field(
         default_factory=lambda: SubtitleProviderConfig(),
-        description="OpenSubtitles provider configuration",
+        description="OpenSubtitles XML-RPC provider (opensubtitles.org)",
+    )
+    opensubtitles_rest: OpenSubtitlesRestProviderConfig = Field(
+        default_factory=lambda: OpenSubtitlesRestProviderConfig(),
+        description="OpenSubtitles REST provider (opensubtitles.com v2)",
+    )
+    subdl: SubdlProviderConfig = Field(
+        default_factory=lambda: SubdlProviderConfig(),
+        description="Subdl provider configuration",
+    )
+    gestdown: GestdownProviderConfig = Field(
+        default_factory=lambda: GestdownProviderConfig(),
+        description="Gestdown provider (Addic7ed via REST, TV shows only)",
     )
 
 
