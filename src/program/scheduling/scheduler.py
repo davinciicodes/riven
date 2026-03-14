@@ -16,10 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+import sqlalchemy
+
 from program.db import db_functions
 from program.db.db import db_session, vacuum_and_analyze_index_maintenance
 from program.media.item import Episode, MediaItem, Movie, Show
 from program.media.state import States
+from program.media.subtitle_entry import SubtitleEntry
+from program.media.filesystem_entry import FilesystemEntry
 from program.scheduling.models import ScheduledStatus, ScheduledTask
 from program.settings import settings_manager
 from program.types import Event
@@ -90,6 +94,11 @@ class ProgramScheduler:
 
         # CDN health monitoring — probes active CDN nodes every 5 minutes
         scheduled_functions[check_cdn_health] = {"interval": 5 * 60}
+
+        # Subtitle backfill — queue completed items missing subtitles (runs at startup
+        # and every hour so new items that bypassed PostProcessing get picked up)
+        if settings_manager.settings.post_processing.subtitle.enabled:
+            scheduled_functions[self._subtitle_backfill] = {"interval": 60 * 60}
 
         for func, config in scheduled_functions.items():
             self.scheduler.add_job(
@@ -177,6 +186,79 @@ class ProgramScheduler:
             )
         else:
             logger.log("NOT_FOUND", "No items required retrying")
+
+    def _subtitle_backfill(self) -> None:
+        """
+        Queue completed movies/episodes that are missing subtitles for post-processing.
+
+        Runs at startup and every hour to catch:
+        - Items that completed before the subtitle service was enabled
+        - Episodes of ongoing shows (which bypass the normal Completed → PostProcessing path)
+        """
+
+        subtitle_settings = settings_manager.settings.post_processing.subtitle
+        if not subtitle_settings.enabled:
+            return
+
+        wanted_languages = subtitle_settings.languages
+
+        try:
+            with db_session() as session:
+                # Find completed movies/episodes that have a FilesystemEntry but are
+                # missing at least one wanted subtitle language
+                completed_items = (
+                    session.execute(
+                        sqlalchemy.select(MediaItem.id)
+                        .where(
+                            MediaItem.last_state == States.Completed,
+                            MediaItem.type.in_(["movie", "episode"]),
+                            MediaItem.id.in_(
+                                sqlalchemy.select(FilesystemEntry.media_item_id).where(
+                                    FilesystemEntry.available_in_vfs == True  # noqa: E712
+                                )
+                            ),
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                if not completed_items:
+                    return
+
+                # Find which of those are missing at least one language
+                items_with_subs = (
+                    session.execute(
+                        sqlalchemy.select(
+                            SubtitleEntry.media_item_id,
+                            sqlalchemy.func.array_agg(SubtitleEntry.language).label("langs"),
+                        )
+                        .where(SubtitleEntry.media_item_id.in_(completed_items))
+                        .group_by(SubtitleEntry.media_item_id)
+                    )
+                    .all()
+                )
+
+                covered = {
+                    row.media_item_id
+                    for row in items_with_subs
+                    if all(lang in row.langs for lang in wanted_languages)
+                }
+
+                to_queue = [iid for iid in completed_items if iid not in covered]
+
+            for item_id in to_queue:
+                self.program.em.add_event(
+                    Event(emitted_by="SubtitleBackfill", item_id=item_id)
+                )
+
+            if to_queue:
+                logger.info(
+                    f"Subtitle backfill: queued {len(to_queue)} item(s) missing subtitles"
+                )
+
+        except Exception as e:
+            logger.error(f"Subtitle backfill error: {e}")
 
     def _get_pending_scheduled_tasks(self, session: Session) -> Sequence[ScheduledTask]:
         """Return all pending scheduled tasks."""

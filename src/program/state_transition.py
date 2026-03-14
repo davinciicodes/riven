@@ -70,6 +70,13 @@ def process_event(
 
                 if processed_event.related_media_items:
                     items_to_submit += processed_event.related_media_items
+
+            # All downloadable seasons are done but show stays Ongoing (still airing).
+            # Route to PostProcessing so completed episodes can get subtitles.
+            if not items_to_submit and emitted_by != services.post_processing:
+                next_service = services.post_processing
+                items_to_submit = [existing_item]
+
         elif isinstance(existing_item, Season):
             incomplete_episodes = [
                 e for e in existing_item.episodes if e.last_state != States.Completed
@@ -80,6 +87,11 @@ def process_event(
 
                 if processed_event.related_media_items:
                     items_to_submit += processed_event.related_media_items
+
+            # All episodes done but season stays PartiallyCompleted/Ongoing.
+            if not items_to_submit and emitted_by != services.post_processing:
+                next_service = services.post_processing
+                items_to_submit = [existing_item]
 
     elif existing_item and existing_item.last_state == States.Indexed:
         next_service = services.scraping
