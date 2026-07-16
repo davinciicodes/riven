@@ -145,7 +145,8 @@ class OpenSubtitlesRestProvider(SubtitleProvider):
             if status == 401:
                 logger.error("OpenSubtitles REST: invalid API key")
             elif status == 429:
-                logger.warning("OpenSubtitles REST: rate limited")
+                logger.warning("OpenSubtitles REST: rate limited, pausing for 1 hour")
+                self.mark_rate_limited(3600)
             else:
                 logger.error(f"OpenSubtitles REST: HTTP {status} on search")
         except Exception as e:
@@ -167,8 +168,9 @@ class OpenSubtitlesRestProvider(SubtitleProvider):
 
                 if dl_resp.status_code == 406:
                     logger.warning(
-                        "OpenSubtitles REST: daily download quota exhausted"
+                        "OpenSubtitles REST: daily download quota exhausted, pausing for 1 hour"
                     )
+                    self.mark_rate_limited(3600)
                     return None
 
                 dl_resp.raise_for_status()

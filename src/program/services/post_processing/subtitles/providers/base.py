@@ -2,6 +2,7 @@
 Base provider interface for subtitle providers.
 """
 
+import time
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
@@ -23,6 +24,16 @@ class SubtitleItem(BaseModel):
 
 class SubtitleProvider(ABC):
     """Abstract base class for subtitle providers."""
+
+    _cooldown_until: float = 0.0
+
+    def mark_rate_limited(self, cooldown_seconds: int = 3600):
+        """Mark this provider as rate-limited for the given duration."""
+        self._cooldown_until = time.monotonic() + cooldown_seconds
+
+    @property
+    def is_rate_limited(self) -> bool:
+        return time.monotonic() < self._cooldown_until
 
     @abstractmethod
     def search_subtitles(

@@ -131,7 +131,11 @@ class SubdlProvider(SubtitleProvider):
             return results
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"Subdl search HTTP error {e.response.status_code}: {e}")
+            if e.response.status_code == 429:
+                logger.warning("Subdl: rate limited, pausing for 1 hour")
+                self.mark_rate_limited(3600)
+            else:
+                logger.error(f"Subdl search HTTP error {e.response.status_code}: {e}")
         except Exception as e:
             logger.error(f"Subdl search error: {e}")
 
@@ -158,7 +162,11 @@ class SubdlProvider(SubtitleProvider):
             return content
 
         except httpx.HTTPStatusError as e:
-            logger.error(f"Subdl download HTTP error {e.response.status_code}: {e}")
+            if e.response.status_code == 429:
+                logger.warning("Subdl: rate limited, pausing for 1 hour")
+                self.mark_rate_limited(3600)
+            else:
+                logger.error(f"Subdl download HTTP error {e.response.status_code}: {e}")
         except Exception as e:
             logger.error(f"Subdl download error: {e}")
 

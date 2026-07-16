@@ -475,6 +475,9 @@ class SubtitleService(AnalysisService[SubtitleConfig]):
         all_results = list[SubtitleItem]()
 
         for provider in self.providers:
+            if provider.is_rate_limited:
+                logger.debug(f"Skipping {provider.name} (rate limited)")
+                continue
             try:
                 results = provider.search_subtitles(
                     imdb_id=imdb_id or "",
