@@ -496,11 +496,19 @@ class SubtitleService(AnalysisService[SubtitleConfig]):
             logger.debug(f"No {language} subtitles found for {item.log_string}")
             return
 
-        # Sort by score (highest first)
+        # Pick the best result per provider so one exhausted provider
+        # doesn't block others from being tried.
+        seen_providers = set()
+        best_per_provider = []
         all_results.sort(key=lambda x: x.score, reverse=True)
+        for r in all_results:
+            if r.provider not in seen_providers:
+                seen_providers.add(r.provider)
+                best_per_provider.append(r)
+        best_per_provider.sort(key=lambda x: x.score, reverse=True)
 
         # Try to download the best subtitle
-        for subtitle_info in all_results[:3]:  # Try top 3 results
+        for subtitle_info in best_per_provider:
             try:
                 provider_name = subtitle_info.provider
                 provider = next(
